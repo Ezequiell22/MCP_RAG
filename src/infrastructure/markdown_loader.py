@@ -3,6 +3,8 @@ from pathlib import Path
 
 import yaml
 
+from src.domain.interfaces import DocumentLoader
+
 
 def parse_frontmatter(content: str) -> tuple[dict, str]:
     if content.startswith("---"):
@@ -18,20 +20,24 @@ def parse_frontmatter(content: str) -> tuple[dict, str]:
 
 
 def extract_sections(content: str) -> list[str]:
-    sections = re.findall(r"^##\s+(.+)$", content, re.MULTILINE)
-    return sections
+    return re.findall(r"^##\s+(.+)$", content, re.MULTILINE)
 
 
-def load_guide(path: Path, guides_dir: Path | None = None) -> dict:
-    content = path.read_text(encoding="utf-8")
-    meta, body = parse_frontmatter(content)
-    sections = extract_sections(body)
-    rel_path = path.relative_to(guides_dir) if guides_dir else path
-    return {
-        "path": str(rel_path),
-        "filename": path.name,
-        "descricao": meta.get("descricao", ""),
-        "palavras_chave": meta.get("palavras_chave", []),
-        "content": body,
-        "secoes": sections,
-    }
+class MarkdownLoader(DocumentLoader):
+    def supports(self, path: Path) -> bool:
+        return path.suffix.lower() == ".md"
+
+    def load(self, path: Path, source_dir: Path | None = None, source_type: str = "documento") -> dict:
+        content = path.read_text(encoding="utf-8")
+        meta, body = parse_frontmatter(content)
+        sections = extract_sections(body)
+        rel_path = path.relative_to(source_dir) if source_dir else path
+        return {
+            "path": str(rel_path),
+            "filename": path.name,
+            "descricao": meta.get("descricao", ""),
+            "palavras_chave": meta.get("palavras_chave", []),
+            "content": body,
+            "secoes": sections,
+            "fonte": source_type,
+        }

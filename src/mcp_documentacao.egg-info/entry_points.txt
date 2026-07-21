@@ -1,2 +1,0 @@
-[console_scripts]
-mcp-documentacao = src.server:main

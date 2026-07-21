@@ -2,92 +2,115 @@ import hashlib
 import json
 from pathlib import Path
 
-from src.config.settings import Settings
+from src.config.settings import Settings, SourceConfig
 from src.domain.models import Chunk
 from src.infrastructure.bm25_repository import BM25Repository
 from src.infrastructure.chromadb_repository import ChromaRepository
 from src.infrastructure.embedding_provider import HuggingFaceEmbeddingProvider
-from src.infrastructure.markdown_loader import load_guide
+from src.infrastructure.markdown_loader import MarkdownLoader
 from src.infrastructure.splitter import split_markdown
-
-HASH_FILE = ".index_hash.json"
+from src.infrastructure.text_loader import TextLoader
 
 
 def _file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _load_hashes() -> dict[str, str]:
-    f = Path(HASH_FILE)
-    if f.exists():
-        return json.loads(f.read_text())
-    return {}
+def _build_loader_chain() -> list:
+    return [MarkdownLoader(), TextLoader()]
 
 
-def _save_hashes(hashes: dict[str, str]) -> None:
-    Path(HASH_FILE).write_text(json.dumps(hashes, indent=2))
+def _find_files(source_dir: Path, loaders: list) -> list[tuple[Path]]:
+    files = []
+    for pattern in ("**/*",):
+        for fpath in sorted(source_dir.glob(pattern)):
+            if fpath.is_file() and any(loader.supports(fpath) for loader in loaders):
+                files.append(fpath)
+    return files
 
 
 class IndexingService:
     def __init__(self, settings: Settings):
         self.settings = settings
-        emb_provider = HuggingFaceEmbeddingProvider(
+        self.vector_store = ChromaRepository(str(settings.db_path), settings.collection_name)
+        self.bm25 = BM25Repository()
+        self.embedding_provider = HuggingFaceEmbeddingProvider(
             settings.embedding.model
         )
-        self.vector_store = ChromaRepository(str(settings.db_path))
-        self.bm25 = BM25Repository()
-        self.embedding_provider = emb_provider
+        self.loaders = _build_loader_chain()
         self.log = None
 
     def set_logger(self, logger):
         self.log = logger
 
+    def _hash_path(self) -> Path:
+        return Path(str(self.settings.db_path)) / ".index_hash.json"
+
+    def _load_hashes(self) -> dict[str, str]:
+        f = self._hash_path()
+        if f.exists():
+            return json.loads(f.read_text())
+        return {}
+
+    def _save_hashes(self, hashes: dict[str, str]) -> None:
+        f = self._hash_path()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(hashes, indent=2))
+
     def index_all(self) -> None:
         log = self.log
-        guides_dir = Path(self.settings.guides_dir)
-        if not guides_dir.exists():
-            if log: log.warning("Guides dir %s not found", guides_dir)
-            return
-
-        md_files = sorted(guides_dir.rglob("*.md"))
-        if not md_files:
-            if log: log.warning("No .md files found in %s", guides_dir)
+        sources = self.settings.resolve_sources()
+        if not sources:
+            if log: log.warning("No sources configured")
             return
 
         force_rebuild = self.vector_store.count() == 0
-        previous_hashes = _load_hashes() if not force_rebuild else {}
+        previous_hashes = self._load_hashes() if not force_rebuild else {}
         current_hashes: dict[str, str] = {}
         all_chunks: list[Chunk] = []
 
-        for md_path in md_files:
-            rel = str(md_path.relative_to(guides_dir))
-            h = _file_hash(md_path)
-            current_hashes[rel] = h
-
-            if not force_rebuild and rel in previous_hashes and previous_hashes[rel] == h:
-                if log: log.info("Skipping %s (unchanged)", rel)
+        for source in sources:
+            source_dir = Path(source.path)
+            if not source_dir.exists():
+                if log: log.warning("Source dir %s not found", source_dir)
                 continue
 
-            try:
-                guide = load_guide(md_path, guides_dir)
-            except Exception as e:
-                if log: log.error("Failed to load %s: %s", rel, e)
-                continue
+            for fpath in _find_files(source_dir, self.loaders):
+                rel = str(fpath.relative_to(source_dir))
+                h = _file_hash(fpath)
+                current_hashes[f"{source.type}:{rel}"] = h
 
-            meta = {
-                "path": guide["path"],
-                "descricao": guide["descricao"],
-                "palavras_chave": json.dumps(guide["palavras_chave"]),
-            }
+                if not force_rebuild:
+                    key = f"{source.type}:{rel}"
+                    if key in previous_hashes and previous_hashes[key] == h:
+                        if log: log.info("Skipping %s (unchanged)", rel)
+                        continue
 
-            chunks = split_markdown(guide["content"], guide["path"], meta, self.settings.chunking)
-            all_chunks.extend(chunks)
+                loader = next((l for l in self.loaders if l.supports(fpath)), None)
+                if not loader:
+                    continue
 
-            if log: log.info("Indexed %d chunks from %s", len(chunks), rel)
+                try:
+                    doc = loader.load(fpath, source_dir, source.type)
+                except Exception as e:
+                    if log: log.error("Failed to load %s: %s", rel, e)
+                    continue
+
+                meta = {
+                    "path": doc["path"],
+                    "fonte": doc["fonte"],
+                    "descricao": doc["descricao"],
+                    "palavras_chave": json.dumps(doc["palavras_chave"]),
+                }
+
+                file_chunks = split_markdown(doc["content"], doc["path"], meta, self.settings.chunking)
+                all_chunks.extend(file_chunks)
+
+                if log: log.info("Indexed %d chunks from %s [%s]", len(file_chunks), rel, source.type)
 
         if not all_chunks:
             if force_rebuild:
-                if log: log.warning("No chunks generated from any file")
+                if log: log.warning("No chunks generated from any source")
             else:
                 if log: log.info("No changes detected")
             return
@@ -100,5 +123,5 @@ class IndexingService:
         self.vector_store.add_chunks(all_chunks, embeddings)
         self.bm25.build_from_chunks(all_chunks)
 
-        _save_hashes(current_hashes)
+        self._save_hashes(current_hashes)
         if log: log.info("Indexed %d chunks total", self.vector_store.count())

@@ -1,28 +1,30 @@
 from pathlib import Path
 
 from src.config.settings import Settings
-from src.domain.models import GuiaInfo
-from src.infrastructure.markdown_loader import load_guide
+from src.domain.models import DocumentInfo
+from src.infrastructure.markdown_loader import load_document
 
 
 class DocumentService:
     def __init__(self, settings: Settings):
         self.settings = settings
 
-    def list_guides(self) -> list[GuiaInfo]:
-        guides_dir = Path(self.settings.guides_dir)
-        if not guides_dir.exists():
-            return []
-        result: list[GuiaInfo] = []
-        for md_path in sorted(guides_dir.rglob("*.md")):
-            try:
-                guide = load_guide(md_path)
-            except Exception:
+    def list_documents(self) -> list[DocumentInfo]:
+        result: list[DocumentInfo] = []
+        for source in self.settings.resolve_sources():
+            source_dir = Path(source.path)
+            if not source_dir.exists():
                 continue
-            result.append(GuiaInfo(
-                arquivo=guide["path"],
-                descricao=guide["descricao"],
-                palavras_chave=guide["palavras_chave"],
-                secoes=guide["secoes"],
-            ))
+            for md_path in sorted(source_dir.rglob("*.md")):
+                try:
+                    doc = load_document(md_path, source_dir, source.type)
+                except Exception:
+                    continue
+                result.append(DocumentInfo(
+                    arquivo=doc["path"],
+                    descricao=doc["descricao"],
+                    palavras_chave=doc["palavras_chave"],
+                    secoes=doc["secoes"],
+                    fonte=doc["fonte"],
+                ))
         return result

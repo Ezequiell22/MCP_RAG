@@ -1,5 +1,10 @@
-guides_dir: ./src/guides
+sources:
+  - path: ./src/guides
+    type: documento
+    description: Documentos técnicos
+
 db_path: ./chroma_db
+collection_name: documents
 
 embedding:
     provider: huggingface
@@ -8,6 +13,8 @@ embedding:
 search:
     top_k: 5
     hybrid: true
+    cache_max_size: 200
+    cache_ttl: 3600
 
 chunking:
     max_size: 1000

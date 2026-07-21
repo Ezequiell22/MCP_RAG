@@ -6,7 +6,7 @@ from src.domain.models import Chunk, ChunkResult
 
 
 class ChromaRepository(VectorStore):
-    def __init__(self, db_path: str, collection_name: str = "guides"):
+    def __init__(self, db_path: str, collection_name: str = "documents"):
         self.client = chromadb.PersistentClient(
             path=db_path,
             settings=ChromaSettings(anonymized_telemetry=False),
@@ -24,13 +24,14 @@ class ChromaRepository(VectorStore):
             embeddings=embeddings,
         )
 
-    def similarity_search(self, query_embedding: list[float], k: int = 5) -> list[ChunkResult]:
+    def similarity_search(self, query_embedding: list[float], k: int = 5, where: dict | None = None) -> list[ChunkResult]:
         if self.collection.count() == 0:
             return []
         results = self.collection.query(
             query_embeddings=[query_embedding],
             n_results=k,
             include=["documents", "metadatas", "distances"],
+            where=where,
         )
         output: list[ChunkResult] = []
         for i in range(len(results["ids"][0])):
@@ -42,6 +43,7 @@ class ChromaRepository(VectorStore):
                 titulo=meta.get("section", ""),
                 score=1.0 - distance,
                 conteudo=results["documents"][0][i],
+                fonte=meta.get("fonte", ""),
             ))
         return output
 

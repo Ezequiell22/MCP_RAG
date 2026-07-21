@@ -7,13 +7,15 @@ class ChunkResult(BaseModel):
     titulo: str
     score: float
     conteudo: str
+    fonte: str = ""
 
 
-class GuiaInfo(BaseModel):
+class DocumentInfo(BaseModel):
     arquivo: str
     descricao: str
     palavras_chave: list[str]
     secoes: list[str]
+    fonte: str = ""
 
 
 class Chunk(BaseModel):
