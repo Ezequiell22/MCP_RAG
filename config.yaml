@@ -1,0 +1,14 @@
+guides_dir: ./src/guides
+db_path: ./chroma_db
+
+embedding:
+    provider: huggingface
+    model: paraphrase-multilingual-MiniLM-L12-v2
+
+search:
+    top_k: 5
+    hybrid: true
+
+chunking:
+    max_size: 1000
+    overlap: 200

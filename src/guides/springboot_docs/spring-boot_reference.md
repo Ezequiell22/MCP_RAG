@@ -1,0 +1,5 @@
+Search
+
+# Reference
+
+This section provides information on using the features and capabilities of Spring Boot.

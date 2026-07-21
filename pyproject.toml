@@ -1,0 +1,18 @@
+[project]
+name = "mcp-documentacao"
+version = "0.1.0"
+description = "MCP de documentação — recuperação de informação via RAG puro"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=1.0.0",
+    "chromadb>=0.5.0",
+    "sentence-transformers>=3.0.0",
+    "rank-bm25>=0.2.0",
+    "pydantic>=2.0.0",
+    "pyyaml>=6.0",
+    "bs4>=0.0.2",
+    "markdownify>=1.2.3",
+]
+
+[project.scripts]
+mcp-documentacao = "src.server:main"

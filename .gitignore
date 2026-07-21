@@ -1,0 +1,5 @@
+chroma_db/
+.index_hash.json
+__pycache__/
+*.pyc
+.venv/

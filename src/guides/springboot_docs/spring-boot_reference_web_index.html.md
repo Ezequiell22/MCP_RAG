@@ -1,0 +1,10 @@
+Search
+
+# Web
+
+Spring Boot is well suited for web application development.
+You can create a self-contained HTTP server by using embedded Tomcat, Jetty, or Netty.
+Most web applications use the `spring-boot-starter-web` module to get up and running quickly.
+You can also choose to build reactive web applications by using the `spring-boot-starter-webflux` module.
+
+If you have not yet developed a Spring Boot web application, you can follow the “Hello World!” example in the [Getting started](../../tutorial/first-application/index.html) section.

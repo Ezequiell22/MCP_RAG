@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  mcp-documentacao:
+    build: .
+    image: mcp-documentacao:latest
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./src/guides:/app/src/guides
+      - chroma_data:/app/chroma_db
+      - ./config.yaml:/app/config.yaml
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+
+volumes:
+  chroma_data:

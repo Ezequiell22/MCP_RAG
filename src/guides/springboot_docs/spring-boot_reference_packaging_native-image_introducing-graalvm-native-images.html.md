@@ -1,0 +1,194 @@
+Search
+
+# Introducing GraalVM Native Images
+
+GraalVM Native Images provide a new way to deploy and run Java applications.
+Compared to the Java Virtual Machine, native images can run with a smaller memory footprint and with much faster startup times.
+
+They are well suited to applications that are deployed using container images and are especially interesting when combined with "Function as a service" (FaaS) platforms.
+
+Unlike traditional applications written for the JVM, GraalVM Native Image applications require ahead-of-time processing in order to create an executable.
+This ahead-of-time processing involves statically analyzing your application code from its main entry point.
+
+A GraalVM Native Image is a complete, platform-specific executable.
+You do not need to ship a Java Virtual Machine in order to run a native image.
+
+|  |  |
+| --- | --- |
+|  | If you just want to get started and experiment with GraalVM you can jump to the [Developing Your First GraalVM Native Application](../../../how-to/native-image/developing-your-first-application.html) section and return to this section later. |
+
+## Key Differences with JVM Deployments
+
+The fact that GraalVM Native Images are produced ahead-of-time means that there are some key differences between native and JVM based applications.
+The main differences are:
+
+* Static analysis of your application is performed at build-time from the `main` entry point.
+* Code that cannot be reached when the native image is created will be removed and won’t be part of the executable.
+* GraalVM is not directly aware of dynamic elements of your code and must be told about reflection, resources, serialization, and dynamic proxies.
+* The application classpath is fixed at build time and cannot change.
+* There is no lazy class loading, everything shipped in the executables will be loaded in memory on startup.
+* There are some limitations around some aspects of Java applications that are not fully supported.
+
+On top of those differences, Spring uses a process called [Spring Ahead-of-Time processing](#packaging.native-image.introducing-graalvm-native-images.understanding-aot-processing), which imposes further limitations.
+Please make sure to read at least the beginning of the next section to learn about those.
+
+|  |  |
+| --- | --- |
+|  | The [Native Image Compatibility Guide](https://www.graalvm.org/25/reference-manual/native-image/metadata/Compatibility/) section of the GraalVM reference documentation provides more details about GraalVM limitations. |
+
+## Understanding Spring Ahead-of-Time Processing
+
+Typical Spring Boot applications are quite dynamic and configuration is performed at runtime.
+In fact, the concept of Spring Boot auto-configuration depends heavily on reacting to the state of the runtime in order to configure things correctly.
+
+Although it would be possible to tell GraalVM about these dynamic aspects of the application, doing so would undo most of the benefit of static analysis.
+So instead, when using Spring Boot to create native images, a closed-world is assumed and the dynamic aspects of the application are restricted.
+
+A closed-world assumption implies, besides [the limitations created by GraalVM itself](#packaging.native-image.introducing-graalvm-native-images.key-differences-with-jvm-deployments), the following restrictions:
+
+* The beans defined in your application cannot change at runtime, meaning:
+
+  + The Spring [`@Profile`](https://docs.spring.io/spring-framework/docs/7.0.x/javadoc-api/org/springframework/context/annotation/Profile.html) annotation and profile-specific configuration [have limitations](../../../how-to/aot.html#howto.aot.conditions).
+  + Properties that change if a bean is created are not supported (for example, [`@ConditionalOnProperty`](https://docs.spring.io/spring-boot/4.1.0/api/java/org/springframework/boot/autoconfigure/condition/ConditionalOnProperty.html) and `.enabled` properties).
+
+When these restrictions are in place, it becomes possible for Spring to perform ahead-of-time processing during build-time and generate additional assets that GraalVM can use.
+A Spring AOT processed application will typically generate:
+
+* Java source code
+* Bytecode (for dynamic proxies, etc.)
+* GraalVM JSON hint files in `META-INF/native-image/{groupId}/{artifactId}/`:
+
+  + Resource hints (`resource-config.json`)
+  + Reflection hints (`reflect-config.json`)
+  + Serialization hints (`serialization-config.json`)
+  + Java Proxy Hints (`proxy-config.json`)
+  + JNI Hints (`jni-config.json`)
+
+If the generated hints are not sufficient, you can also [provide your own](advanced-topics.html#packaging.native-image.advanced.custom-hints).
+
+### Source Code Generation
+
+Spring applications are composed of Spring Beans.
+Internally, Spring Framework uses two distinct concepts to manage beans.
+There are bean instances, which are the actual instances that have been created and can be injected into other beans.
+There are also bean definitions which are used to define attributes of a bean and how its instance should be created.
+
+If we take a typical [`@Configuration`](https://docs.spring.io/spring-framework/docs/7.0.x/javadoc-api/org/springframework/context/annotation/Configuration.html) class:
+
+```
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration(proxyBeanMethods = false)
+public class MyConfiguration {
+
+	@Bean
+	public MyBean myBean() {
+		return new MyBean();
+	}
+
+}
+```
+
+The bean definition is created by parsing the [`@Configuration`](https://docs.spring.io/spring-framework/docs/7.0.x/javadoc-api/org/springframework/context/annotation/Configuration.html) class and finding the [`@Bean`](https://docs.spring.io/spring-framework/docs/7.0.x/javadoc-api/org/springframework/context/annotation/Bean.html) methods.
+In the above example, we’re defining a [`BeanDefinition`](https://docs.spring.io/spring-framework/docs/7.0.x/javadoc-api/org/springframework/beans/factory/config/BeanDefinition.html) for a singleton bean named `myBean`.
+We’re also creating a [`BeanDefinition`](https://docs.spring.io/spring-framework/docs/7.0.x/javadoc-api/org/springframework/beans/factory/config/BeanDefinition.html) for the `MyConfiguration` class itself.
+
+When the `myBean` instance is required, Spring knows that it must invoke the `myBean()` method and use the result.
+When running on the JVM, [`@Configuration`](https://docs.spring.io/spring-framework/docs/7.0.x/javadoc-api/org/springframework/context/annotation/Configuration.html) class parsing happens when your application starts and [`@Bean`](https://docs.spring.io/spring-framework/docs/7.0.x/javadoc-api/org/springframework/context/annotation/Bean.html) methods are invoked using reflection.
+
+When creating a native image, Spring operates in a different way.
+Rather than parsing [`@Configuration`](https://docs.spring.io/spring-framework/docs/7.0.x/javadoc-api/org/springframework/context/annotation/Configuration.html) classes and generating bean definitions at runtime, it does it at build-time.
+Once the bean definitions have been discovered, they are processed and converted into source code that can be analyzed by the GraalVM compiler.
+
+The Spring AOT process would convert the configuration class above to code like this:
+
+```
+import org.springframework.beans.factory.aot.BeanInstanceSupplier;
+import org.springframework.beans.factory.config.BeanDefinition;
+import org.springframework.beans.factory.support.RootBeanDefinition;
+
+/**
+ * Bean definitions for {@link MyConfiguration}.
+ */
+public class MyConfiguration__BeanDefinitions {
+
+	/**
+	 * Get the bean definition for 'myConfiguration'.
+	 */
+	public static BeanDefinition getMyConfigurationBeanDefinition() {
+		Class<?> beanType = MyConfiguration.class;
+		RootBeanDefinition beanDefinition = new RootBeanDefinition(beanType);
+		beanDefinition.setInstanceSupplier(MyConfiguration::new);
+		return beanDefinition;
+	}
+
+	/**
+	 * Get the bean instance supplier for 'myBean'.
+	 */
+	private static BeanInstanceSupplier<MyBean> getMyBeanInstanceSupplier() {
+		return BeanInstanceSupplier.<MyBean>forFactoryMethod(MyConfiguration.class, "myBean")
+			.withGenerator((registeredBean) -> registeredBean.getBeanFactory().getBean(MyConfiguration.class).myBean());
+	}
+
+	/**
+	 * Get the bean definition for 'myBean'.
+	 */
+	public static BeanDefinition getMyBeanBeanDefinition() {
+		Class<?> beanType = MyBean.class;
+		RootBeanDefinition beanDefinition = new RootBeanDefinition(beanType);
+		beanDefinition.setInstanceSupplier(getMyBeanInstanceSupplier());
+		return beanDefinition;
+	}
+
+}
+```
+
+|  |  |
+| --- | --- |
+|  | The exact code generated may differ depending on the nature of your bean definitions. |
+
+You can see above that the generated code creates equivalent bean definitions to the [`@Configuration`](https://docs.spring.io/spring-framework/docs/7.0.x/javadoc-api/org/springframework/context/annotation/Configuration.html) class, but in a direct way that can be understood by GraalVM.
+
+There is a bean definition for the `myConfiguration` bean, and one for `myBean`.
+When a `myBean` instance is required, a [`BeanInstanceSupplier`](https://docs.spring.io/spring-framework/docs/7.0.x/javadoc-api/org/springframework/beans/factory/aot/BeanInstanceSupplier.html) is called.
+This supplier will invoke the `myBean()` method on the `myConfiguration` bean.
+
+|  |  |
+| --- | --- |
+|  | During Spring AOT processing, your application is started up to the point that bean definitions are available. Bean instances are not created during the AOT processing phase. |
+
+Spring AOT will generate code like this for all your bean definitions.
+It will also generate code when bean post-processing is required (for example, to call [`@Autowired`](https://docs.spring.io/spring-framework/docs/7.0.x/javadoc-api/org/springframework/beans/factory/annotation/Autowired.html) methods).
+An [`ApplicationContextInitializer`](https://docs.spring.io/spring-framework/docs/7.0.x/javadoc-api/org/springframework/context/ApplicationContextInitializer.html) will also be generated which will be used by Spring Boot to initialize the [`ApplicationContext`](https://docs.spring.io/spring-framework/docs/7.0.x/javadoc-api/org/springframework/context/ApplicationContext.html) when an AOT processed application is actually run.
+
+|  |  |
+| --- | --- |
+|  | Although AOT generated source code can be verbose, it is quite readable and can be helpful when debugging an application. Generated source files can be found in `target/spring-aot/main/sources` when using Maven and `build/generated/aotSources` with Gradle. |
+
+### Hint File Generation
+
+In addition to generating source files, the Spring AOT engine will also generate hint files that are used by GraalVM.
+Hint files contain JSON data that describes how GraalVM should deal with things that it can’t understand by directly inspecting the code.
+
+For example, you might be using a Spring annotation on a private method.
+Spring will need to use reflection in order to invoke private methods, even on GraalVM.
+When such situations arise, Spring can write a reflection hint so that GraalVM knows that even though the private method isn’t called directly, it still needs to be available in the native image.
+
+Hint files are generated under `META-INF/native-image` where they are automatically picked up by GraalVM.
+
+|  |  |
+| --- | --- |
+|  | Generated hint files can be found in `target/spring-aot/main/resources` when using Maven and `build/generated/aotResources` with Gradle. |
+
+### Proxy Class Generation
+
+Spring sometimes needs to generate proxy classes to enhance the code you’ve written with additional features.
+To do this, it uses the cglib library which directly generates bytecode.
+
+When an application is running on the JVM, proxy classes are generated dynamically as the application runs.
+When creating a native image, these proxies need to be created at build-time so that they can be included by GraalVM.
+
+|  |  |
+| --- | --- |
+|  | Unlike source code generation, generated bytecode isn’t particularly helpful when debugging an application. However, if you need to inspect the contents of the `.class` files using a tool such as `javap` you can find them in `target/spring-aot/main/classes` for Maven and `build/generated/aotClasses` for Gradle. |
